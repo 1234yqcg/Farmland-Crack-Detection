@@ -1,0 +1,58 @@
+data:
+  dataset_yaml: ../filtered_china_drone/dataset.yaml
+  train_dir: ../filtered_china_drone/train/images
+  val_dir: ../filtered_china_drone/val/images
+  annotation_dir: ../filtered_china_drone
+
+model:
+  num_classes: 3
+  pretrained: ./weights/yolov10s_backbone.pt
+  model_scale: s
+
+training:
+  epochs: 150
+  batch_size: 8
+  image_size: [640, 640]
+  lr: 0.0008
+  min_lr: 0.000001
+  weight_decay: 0.001
+  num_workers: 4
+  grad_clip_norm: 10.0
+  
+  optimizer:
+    type: AdamW
+    betas: [0.9, 0.999]
+  
+  scheduler:
+    type: CosineAnnealingLR
+    warmup_epochs: 8
+    warmup_lr: 0.00005
+  
+  loss:
+    box_loss_weight: 2.0
+    cls_loss_weight: 2.0
+    dfl_loss_weight: 1.5
+    focal_gamma: 1.5
+    focal_alpha: 0.25
+    label_smoothing: 0.02
+  
+  amp:
+    enabled: true
+    init_scale: 65536.0
+    growth_factor: 2.0
+    backoff_factor: 0.5
+    growth_interval: 2000
+  
+  gradient_accumulation:
+    enabled: true
+    steps: 4
+
+  evaluation:
+    period: 10
+    conf_threshold: 0.25
+    iou_threshold: 0.5
+
+output:
+  dir: ./outputs/road_crack_pretrain_v3
+  save_period: 10
+  log_interval: 100

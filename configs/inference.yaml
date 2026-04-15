@@ -1,0 +1,30 @@
+model:
+  weights: ./weights/best_model.pt
+  device: cuda
+  conf_threshold: 0.5
+  iou_threshold: 0.45
+
+input:
+  image_size: [512, 512]
+  
+output:
+  save_dir: ./outputs/results
+  save_images: true
+  save_json: true
+  draw_boxes: true
+  show_confidence: true
+
+classes:
+  0: mild
+  1: moderate
+  2: severe
+
+class_names:
+  0: 轻度干裂
+  1: 中度干裂
+  2: 重度干裂
+
+class_colors:
+  0: [0, 255, 0]
+  1: [0, 255, 255]
+  2: [0, 0, 255]

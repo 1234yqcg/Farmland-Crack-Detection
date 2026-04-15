@@ -1,0 +1,31 @@
+model:
+  type: yolov10_crack
+  backbone:
+    type: CSPDarknet
+    depth_multiple: 0.33
+    width_multiple: 0.50
+  neck:
+    type: PANet
+    in_channels: [256, 512, 1024]
+    out_channels: 256
+  head:
+    type: DecoupledHead
+    num_classes: 1
+    reg_max: 16
+  attention:
+    type: CBAM
+    position: neck
+    reduction: 16
+
+training:
+  image_size: [640, 640]
+  batch_size: 16
+  epochs: 300
+  optimizer:
+    type: AdamW
+    lr: 0.001
+    weight_decay: 0.0005
+  scheduler:
+    type: CosineAnnealingLR
+    T_max: 300
+    eta_min: 0.00001
