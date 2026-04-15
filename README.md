@@ -49,11 +49,11 @@ bash scripts/setup_env.sh
 
 **重要：您需要手动下载YOLOv10预训练权重**
 
-📥 **下载地址：** https://github.com/THU-MIG/yolov10/releases/tag/v1.0
+📥 **下载地址：** <https://github.com/THU-MIG/yolov10/releases/tag/v1.0>
 
 **推荐下载（适合4GB显存）：**
 
-- [yolov10n.pt](https://github.com/THU-MIG/yolov10/releases/download/v1.0/yolov10n.pt) (~6MB)
+- [yolov10n.pt](https://github.com/THU-MIG/yolov10/releases/download/v1.0/yolov10n.pt) (\~6MB)
 
 **下载后放置到：** `weights/yolov10n.pt`
 
@@ -101,11 +101,11 @@ python gui/main_window.py
 
 ## 📊 性能目标
 
-| 指标      | 目标值    |
-| ------- | ------ |
-| mAP@0.5 | ≥ 90%  |
-| FPS     | ≥ 30   |
-| 推理延迟    | ≤ 33ms |
+| 指标       | 目标值    |
+| -------- | ------ |
+| mAP\@0.5 | ≥ 90%  |
+| FPS      | ≥ 30   |
+| 推理延迟     | ≤ 33ms |
 
 ## 📚 文档
 
@@ -123,17 +123,12 @@ python gui/main_window.py
 - [ ] 性能优化
 - [ ] 系统测试
 
-## 👥 作者信息
-
-- **姓名：** 高一峰
-- **学号：** 2212100112
-- **专业：** 计算机科学与技术
-- **指导教师：** 田颖
+#
 
 ## 📞 联系方式
 
 如有问题，请联系指导教师或参考项目文档。
 
----
+***
 
 **注意：** 本项目为毕业设计项目，仅供学术研究和教学使用。
