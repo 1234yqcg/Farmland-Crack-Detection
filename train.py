@@ -116,6 +116,7 @@ class Trainer:
         
         train_dataset = RoboflowFarmlandDataset(dataset_yaml, 'train', img_size, augment=True)
         self.class_names = train_dataset.class_names
+        self.class_weights = train_dataset.get_class_weights().to(self.device)
         self.train_loader = DataLoader(
             train_dataset,
             batch_size=batch_size, shuffle=True, num_workers=num_workers,
@@ -175,16 +176,59 @@ class Trainer:
         except Exception:
             pass
 
-    def _sigmoid_focal_loss(self, logits, targets, alpha=0.25, gamma=1.5):
+    def _sigmoid_focal_loss(self, logits, targets, alpha=0.25, gamma=1.5, class_weights=None):
         bce_loss = F.binary_cross_entropy_with_logits(logits, targets, reduction='none')
         if gamma <= 0:
             alpha_factor = targets * alpha + (1 - targets) * (1 - alpha)
-            return (alpha_factor * bce_loss).sum()
+            loss = alpha_factor * bce_loss
+            if class_weights is not None:
+                loss = loss * class_weights.view(1, -1, 1, 1)
+            return loss.sum()
         pred_prob = torch.sigmoid(logits)
         p_t = targets * pred_prob + (1 - targets) * (1 - pred_prob)
         alpha_factor = targets * alpha + (1 - targets) * (1 - alpha)
         modulating_factor = (1.0 - p_t).pow(gamma)
-        return (alpha_factor * modulating_factor * bce_loss).sum()
+        loss = alpha_factor * modulating_factor * bce_loss
+        if class_weights is not None:
+            loss = loss * class_weights.view(1, -1, 1, 1)
+        return loss.sum()
+
+    def _bbox_ciou_loss(self, boxes1, boxes2, eps=1e-7):
+        inter_x1 = torch.max(boxes1[:, 0], boxes2[:, 0])
+        inter_y1 = torch.max(boxes1[:, 1], boxes2[:, 1])
+        inter_x2 = torch.min(boxes1[:, 2], boxes2[:, 2])
+        inter_y2 = torch.min(boxes1[:, 3], boxes2[:, 3])
+
+        inter_w = (inter_x2 - inter_x1).clamp(min=0)
+        inter_h = (inter_y2 - inter_y1).clamp(min=0)
+        inter_area = inter_w * inter_h
+
+        area1 = (boxes1[:, 2] - boxes1[:, 0]).clamp(min=0) * (boxes1[:, 3] - boxes1[:, 1]).clamp(min=0)
+        area2 = (boxes2[:, 2] - boxes2[:, 0]).clamp(min=0) * (boxes2[:, 3] - boxes2[:, 1]).clamp(min=0)
+        union_area = area1 + area2 - inter_area + eps
+        iou = inter_area / union_area
+
+        center1_x = (boxes1[:, 0] + boxes1[:, 2]) * 0.5
+        center1_y = (boxes1[:, 1] + boxes1[:, 3]) * 0.5
+        center2_x = (boxes2[:, 0] + boxes2[:, 2]) * 0.5
+        center2_y = (boxes2[:, 1] + boxes2[:, 3]) * 0.5
+        center_dist = (center1_x - center2_x).pow(2) + (center1_y - center2_y).pow(2)
+
+        enclose_x1 = torch.min(boxes1[:, 0], boxes2[:, 0])
+        enclose_y1 = torch.min(boxes1[:, 1], boxes2[:, 1])
+        enclose_x2 = torch.max(boxes1[:, 2], boxes2[:, 2])
+        enclose_y2 = torch.max(boxes1[:, 3], boxes2[:, 3])
+        enclose_diag = (enclose_x2 - enclose_x1).pow(2) + (enclose_y2 - enclose_y1).pow(2) + eps
+
+        w1 = (boxes1[:, 2] - boxes1[:, 0]).clamp(min=eps)
+        h1 = (boxes1[:, 3] - boxes1[:, 1]).clamp(min=eps)
+        w2 = (boxes2[:, 2] - boxes2[:, 0]).clamp(min=eps)
+        h2 = (boxes2[:, 3] - boxes2[:, 1]).clamp(min=eps)
+        v = (4.0 / (torch.pi ** 2)) * (torch.atan(w2 / h2) - torch.atan(w1 / h1)).pow(2)
+        with torch.no_grad():
+            alpha = v / (1 - iou + v + eps)
+        ciou = iou - (center_dist / enclose_diag + alpha * v)
+        return (1.0 - ciou.clamp(min=-1.0, max=1.0)).sum()
 
     def _get_checkpoint(self, epoch):
         return {
@@ -220,6 +264,7 @@ class Trainer:
         focal_gamma = loss_cfg.get('focal_gamma', 0.0)
         focal_alpha = loss_cfg.get('focal_alpha', 0.25)
         label_smoothing = loss_cfg.get('label_smoothing', 0.0)
+        class_weights = self.class_weights
         
         for i, (cls_pred, reg_pred) in enumerate(outputs):
             # cls_pred: [B, NC, H, W]
@@ -231,6 +276,18 @@ class Trainer:
             target_cls = torch.zeros_like(cls_pred) # [B, NC, H, W]
             target_mask = torch.zeros((b, h, w), device=self.device, dtype=torch.bool)
             target_box = torch.zeros((b, h, w, 4), device=self.device) # [B, H, W, 4] (l,t,r,b) normalized by stride
+            assignment_cost = torch.full((b, h, w), float('inf'), device=self.device)
+            candidate_offsets = torch.tensor([
+                [0, 0],
+                [1, 0], [-1, 0], [0, 1], [0, -1]
+            ], device=self.device)
+            grid_y, grid_x = torch.meshgrid(
+                torch.arange(h, device=self.device),
+                torch.arange(w, device=self.device),
+                indexing='ij'
+            )
+            center_grid = torch.stack((grid_x, grid_y), dim=-1).float() + 0.5
+            center_grid = center_grid.unsqueeze(0).expand(b, -1, -1, -1)
             
             # Assign targets to grid cells
             for batch_idx, t_list in enumerate(targets):
@@ -249,38 +306,58 @@ class Trainer:
                 gx_i = gx.long().clamp(0, w-1)
                 gy_i = gy.long().clamp(0, h-1)
                 
-                # Enhanced positive assignment: center + 8 neighbors (3x3 grid)
-                # This provides more training signal for small datasets
-                offsets = torch.tensor([
-                    [0, 0],   # center
-                    [1, 0], [-1, 0], [0, 1], [0, -1],  # 4 neighbors
-                    [1, 1], [1, -1], [-1, 1], [-1, -1]  # 4 diagonal
-                ], device=self.device)
                 for idx in range(len(gt_boxes_grid)):
                     base_x = gx_i[idx].item()
                     base_y = gy_i[idx].item()
                     cls_id = gt_classes[idx].item()
-                    for off in offsets:
+                    gt_box = gt_boxes_grid[idx:idx + 1, :]
+                    gt_center = gt_centers[idx]
+                    gt_size = (gt_box[:, 2:] - gt_box[:, :2]).squeeze(0)
+                    object_scale = torch.sqrt((gt_size[0] * gt_size[1]).clamp(min=1e-6))
+                    dynamic_top_k = 1
+                    if object_scale >= 2.0:
+                        dynamic_top_k = 3
+                    if object_scale >= 4.0:
+                        dynamic_top_k = 5
+
+                    candidates = []
+                    for off in candidate_offsets:
                         cx = int(base_x + int(off[0]))
                         cy = int(base_y + int(off[1]))
                         if 0 <= cx < w and 0 <= cy < h:
-                            center_xy = torch.tensor([cx + 0.5, cy + 0.5], device=self.device).unsqueeze(0)
-                            box_xyxy = gt_boxes_grid[idx:idx+1, :]
-                            ltrb = torch.cat([center_xy - box_xyxy[:, :2], box_xyxy[:, 2:] - center_xy], dim=1)
-                            if ltrb.max() >= self.reg_max - 1.01:
+                            center_xy = torch.tensor([cx + 0.5, cy + 0.5], device=self.device)
+                            center_offset = torch.abs(center_xy - gt_center)
+                            if center_offset.max() > 1.25:
                                 continue
+                            center_xy = center_xy.unsqueeze(0)
+                            ltrb = torch.cat([center_xy - gt_box[:, :2], gt_box[:, 2:] - center_xy], dim=1)
+                            if (ltrb <= 0).any() or ltrb.max() >= self.reg_max - 1.01:
+                                continue
+                            distance = torch.norm(center_xy.squeeze(0) - gt_center, p=2).item()
+                            candidates.append((distance, cx, cy, ltrb.squeeze(0)))
+
+                    for distance, cx, cy, ltrb in sorted(candidates, key=lambda item: item[0])[:dynamic_top_k]:
+                        if distance < assignment_cost[batch_idx, cy, cx]:
+                            assignment_cost[batch_idx, cy, cx] = distance
                             target_mask[batch_idx, cy, cx] = True
+                            target_cls[batch_idx, :, cy, cx] = 0.0
                             target_cls[batch_idx, cls_id, cy, cx] = 1.0
-                            target_box[batch_idx, cy, cx] = ltrb.squeeze(0).clamp(min=0.01, max=self.reg_max - 1.01)
+                            target_box[batch_idx, cy, cx] = ltrb.clamp(min=0.01, max=self.reg_max - 1.01)
                 
-            num_pos = target_mask.sum()
+            num_pos = int(target_mask.sum().item())
             total_samples += num_pos
             
             if num_pos > 0:
                 # Classification Loss
                 if label_smoothing > 0:
                     target_cls = target_cls * (1 - label_smoothing) + label_smoothing / max(nc, 1)
-                cls_loss_val += self._sigmoid_focal_loss(cls_pred, target_cls, alpha=focal_alpha, gamma=focal_gamma)
+                cls_loss_val += self._sigmoid_focal_loss(
+                    cls_pred,
+                    target_cls,
+                    alpha=focal_alpha,
+                    gamma=focal_gamma,
+                    class_weights=class_weights[:nc]
+                )
                 
                 # Regression Loss
                 # Get predictions at positive locations
@@ -300,14 +377,17 @@ class Trainer:
                 
                 dfl_loss_val += loss_dfl * num_pos
                 
-                # Box Loss (Smooth L1)
+                # Box Loss (CIoU)
                 pred_dist_pos_soft = pred_dist_pos.softmax(dim=-1)
                 pred_val = (pred_dist_pos_soft * torch.arange(self.reg_max, device=self.device).float()).sum(dim=-1) # [N_pos, 4]
-                
-                box_loss_val += F.smooth_l1_loss(pred_val, target_box_pos, reduction='sum')
+                center_pos = center_grid[target_mask]
+                pred_boxes = torch.cat([center_pos - pred_val[:, :2], center_pos + pred_val[:, 2:]], dim=-1)
+                target_boxes = torch.cat([center_pos - target_box_pos[:, :2], center_pos + target_box_pos[:, 2:]], dim=-1)
+
+                box_loss_val += self._bbox_ciou_loss(pred_boxes, target_boxes)
 
         # Normalize losses
-        if total_samples == 0: total_samples = 1
+        total_samples = max(total_samples, 1)
         
         return (cls_loss_val * loss_cfg['cls_loss_weight'] + 
                 box_loss_val * loss_cfg['box_loss_weight'] + 

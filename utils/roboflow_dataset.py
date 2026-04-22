@@ -68,12 +68,21 @@ class RoboflowFarmlandDataset(Dataset):
             split_path = Path(split_path)
             if not split_path.is_absolute():
                 split_path = (self.dataset_root / split_path).resolve()
-            self.images_dir = split_path
-            if self.images_dir.name != "images":
-                self.images_dir = self.images_dir / "images"
+            if split_path.is_dir() and any(split_path.glob("*.*")):
+                self.images_dir = split_path
+            elif (split_path / "images").exists():
+                self.images_dir = split_path / "images"
+            else:
+                self.images_dir = split_path
         else:
             self.images_dir = self.dataset_root / split / "images"
-        self.labels_dir = self.images_dir.parent / "labels"
+
+        candidate_label_dirs = [
+            self.images_dir.parent / "labels",
+            self.images_dir / "labels",
+            self.images_dir
+        ]
+        self.labels_dir = next((path for path in candidate_label_dirs if path.exists()), self.images_dir.parent / "labels")
         
         # 验证目录结构
         self._validate_directory_structure()
@@ -91,12 +100,12 @@ class RoboflowFarmlandDataset(Dataset):
         # 数据增强配置
         self.transform = transform if transform else self._get_default_transforms()
         
-        print(f"📊 {split}集初始化完成:")
-        print(f"  📸 图像数量: {len(self.image_files)}")
-        print(f"  🏷️  标注数量: {len(self.label_files)}")
-        print(f"  📋 类别: {self.class_names}")
-        print(f"  📦 总标注框: {self.stats['total_boxes']}")
-        print(f"  🎯 平均每图标注: {self.stats['avg_boxes_per_image']:.2f}")
+        print(f"[DATA] {split}集初始化完成:")
+        print(f"  Images: {len(self.image_files)}")
+        print(f"  Labels: {len(self.label_files)}")
+        print(f"  Classes: {self.class_names}")
+        print(f"  Total boxes: {self.stats['total_boxes']}")
+        print(f"  Avg boxes/image: {self.stats['avg_boxes_per_image']:.2f}")
     
     def _load_yaml_config(self) -> Dict:
         """加载YAML配置文件"""
@@ -117,12 +126,12 @@ class RoboflowFarmlandDataset(Dataset):
     
     def _validate_classes(self):
         """验证类别设置"""
-        print(f"📋 检测到 {len(self.class_names)} 个类别:")
+        print(f"[DATA] 检测到 {len(self.class_names)} 个类别:")
         for i, name in enumerate(self.class_names):
             print(f"  {i}: {name}")
         
         if len(self.class_names) != self.num_classes:
-            print(f"⚠️  注意: names数量({len(self.class_names)}) 与 nc({self.num_classes}) 不一致")
+            print(f"[WARN] names数量({len(self.class_names)}) 与 nc({self.num_classes}) 不一致")
     
     def _validate_directory_structure(self):
         """验证目录结构"""
@@ -130,7 +139,7 @@ class RoboflowFarmlandDataset(Dataset):
             raise FileNotFoundError(f"图像目录不存在: {self.images_dir}")
         
         if not self.labels_dir.exists():
-            raise FileNotFoundError(f"标签目录不存在: {self.labels_dir}")
+            print(f"[WARN] 标签目录不存在，按空标签处理: {self.labels_dir}")
     
     def _get_image_files(self) -> List[Path]:
         """获取图像文件列表"""
@@ -164,7 +173,7 @@ class RoboflowFarmlandDataset(Dataset):
             if label_file.exists():
                 label_files.append(label_file)
             else:
-                print(f"⚠️  警告: 缺少标签文件 {label_file}")
+                print(f"[WARN] 缺少标签文件 {label_file}")
                 label_files.append(None)
         
         return label_files
@@ -187,7 +196,7 @@ class RoboflowFarmlandDataset(Dataset):
                                 class_counts[class_id] += 1
                                 total_boxes += 1
             except Exception as e:
-                print(f"⚠️  警告: 读取标签文件失败 {label_file}: {e}")
+                print(f"[WARN] 读取标签文件失败 {label_file}: {e}")
         
         return {
             'total_boxes': total_boxes,
@@ -306,7 +315,7 @@ class RoboflowFarmlandDataset(Dataset):
                 if not isinstance(image, torch.Tensor):
                     image = torch.from_numpy(image).permute(2, 0, 1).float() / 255.0
             except Exception as e:
-                print(f"⚠️  数据增强失败 {image_path}: {e}")
+                print(f"[WARN] 数据增强失败 {image_path}: {e}")
                 image = torch.from_numpy(image).permute(2, 0, 1).float() / 255.0
         else:
             # 基本处理
@@ -417,11 +426,11 @@ class RoboflowFarmlandDataset(Dataset):
                         labels.append([x1, y1, x2, y2, class_id])
                         
                     except ValueError as e:
-                        print(f"⚠️  警告: 解析标签失败 {label_path}:{line_num}: {e}")
+                        print(f"[WARN] 解析标签失败 {label_path}:{line_num}: {e}")
                         continue
         
         except Exception as e:
-            print(f"⚠️  警告: 读取标签文件失败 {label_path}: {e}")
+            print(f"[WARN] 读取标签文件失败 {label_path}: {e}")
         
         return labels
     
@@ -640,17 +649,17 @@ def test_dataset():
         )
         
         print(f"✅ 数据集创建成功")
-        print(f"📊 数据集统计:")
-        print(f"  📸 图像数量: {len(dataset)}")
-        print(f"  📦 标注框总数: {dataset.stats['total_boxes']}")
-        print(f"  📋 类别分布: {dataset.stats['class_distribution']}")
+        print(f"[DATA] 数据集统计:")
+        print(f"  Images: {len(dataset)}")
+        print(f"  Total boxes: {dataset.stats['total_boxes']}")
+        print(f"  Class distribution: {dataset.stats['class_distribution']}")
         
         # 测试数据加载
         if len(dataset) > 0:
             sample = dataset[0]
             print(f"\n✅ 样本加载成功:")
             print(f"  🖼️  图像形状: {sample['image'].shape}")
-            print(f"  🏷️  标签数量: {len(sample['labels'])}")
+            print(f"  Label count: {len(sample['labels'])}")
             print(f"  📁 图像路径: {sample['image_path']}")
         
         # 测试类别权重

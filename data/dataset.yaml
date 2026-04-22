@@ -1,6 +1,6 @@
 path: D:\桌面\学习\000毕业设计！\YOLOv10\farmland_crack_detection\data
 train: train/images
-val: val/images
+val: valid
 test: test/images
 
 nc: 1

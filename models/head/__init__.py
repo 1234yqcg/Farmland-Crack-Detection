@@ -1,3 +1,3 @@
-from .decoupled_head import DecoupledHead, DFL
+from .decoupled_head import DecoupledHead
 
-__all__ = ['DecoupledHead', 'DFL']
+__all__ = ['DecoupledHead']
