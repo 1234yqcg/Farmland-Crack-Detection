@@ -165,7 +165,12 @@ def evaluate_map(model, dataloader, device, conf_threshold=0.5, iou_threshold=0.
                 all_targets.append(sample_targets)
     map_results = calculate_map(all_predictions, all_targets, iou_thresholds=[iou_threshold], num_classes=num_classes)
     pr_results = calculate_precision_recall(all_predictions, all_targets, iou_threshold=iou_threshold)
-    return map_results.get(f'mAP@{iou_threshold}', 0.0), pr_results['precision'], pr_results['recall']
+    return (
+        map_results.get(f'mAP@{iou_threshold}', 0.0),
+        pr_results['precision'],
+        pr_results['recall'],
+        map_results.get(f'AP_per_class@{iou_threshold}', {})
+    )
 
 
 if __name__ == '__main__':
@@ -192,7 +197,7 @@ if __name__ == '__main__':
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=2, collate_fn=collate_fn)
 
     print(f"\nEvaluating on {val_split} set ({len(val_dataset)} images)...")
-    ap, precision, recall = evaluate_map(
+    ap, precision, recall, per_class_ap = evaluate_map(
         model,
         val_loader,
         device,
@@ -207,4 +212,8 @@ if __name__ == '__main__':
     print(f"mAP@0.5: {ap:.4f}")
     print(f"Precision: {precision:.4f}")
     print(f"Recall: {recall:.4f}")
+    if per_class_ap:
+        print("Per-class AP:")
+        for class_id, class_ap in per_class_ap.items():
+            print(f"  class {class_id}: {class_ap:.4f}")
     print(f"{'=' * 50}")

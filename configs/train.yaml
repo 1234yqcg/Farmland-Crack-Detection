@@ -33,7 +33,7 @@ training:
     dfl_loss_weight: 1.5
     focal_gamma: 1.5
     focal_alpha: 0.25
-    label_smoothing: 0.02
+    label_smoothing: 0.0
   
   amp:
     enabled: true

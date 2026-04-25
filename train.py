@@ -8,7 +8,7 @@ import yaml
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.cuda.amp import GradScaler, autocast
@@ -117,9 +117,25 @@ class Trainer:
         train_dataset = RoboflowFarmlandDataset(dataset_yaml, 'train', img_size, augment=True)
         self.class_names = train_dataset.class_names
         self.class_weights = train_dataset.get_class_weights().to(self.device)
+        sampling_cfg = self.config['training'].get('sampling', {})
+        use_weighted_sampling = sampling_cfg.get('enabled', False)
+        train_sampler = None
+        shuffle = True
+        if use_weighted_sampling:
+            sampler_weights = train_dataset.get_image_sampling_weights(
+                class_weights=self.class_weights.detach().cpu(),
+                background_weight=sampling_cfg.get('background_weight', 0.2),
+                power=sampling_cfg.get('power', 1.0)
+            )
+            train_sampler = WeightedRandomSampler(
+                weights=sampler_weights,
+                num_samples=len(sampler_weights),
+                replacement=True
+            )
+            shuffle = False
         self.train_loader = DataLoader(
             train_dataset,
-            batch_size=batch_size, shuffle=True, num_workers=num_workers,
+            batch_size=batch_size, shuffle=shuffle, sampler=train_sampler, num_workers=num_workers,
             collate_fn=collate_fn, pin_memory=True, drop_last=True
         )
         
@@ -346,19 +362,23 @@ class Trainer:
                 
             num_pos = int(target_mask.sum().item())
             total_samples += num_pos
-            
-            if num_pos > 0:
-                # Classification Loss
-                if label_smoothing > 0:
-                    target_cls = target_cls * (1 - label_smoothing) + label_smoothing / max(nc, 1)
-                cls_loss_val += self._sigmoid_focal_loss(
-                    cls_pred,
-                    target_cls,
-                    alpha=focal_alpha,
-                    gamma=focal_gamma,
-                    class_weights=class_weights[:nc]
+
+            # 分类损失始终计算，避免无正样本尺度完全跳过背景学习。
+            if label_smoothing > 0 and num_pos > 0:
+                pos_mask = target_mask.unsqueeze(1).expand(-1, nc, -1, -1)
+                target_cls[pos_mask] = (
+                    target_cls[pos_mask] * (1 - label_smoothing)
+                    + label_smoothing / max(nc, 1)
                 )
-                
+            cls_loss_val += self._sigmoid_focal_loss(
+                cls_pred,
+                target_cls,
+                alpha=focal_alpha,
+                gamma=focal_gamma,
+                class_weights=class_weights[:nc]
+            )
+
+            if num_pos > 0:
                 # Regression Loss
                 # Get predictions at positive locations
                 # reg_pred: [B, 4*reg_max, H, W] -> permute -> [B, H, W, 4, reg_max]
@@ -414,7 +434,7 @@ class Trainer:
     @torch.no_grad()
     def validate_metrics(self, epoch: int = 0):
         self.model.eval()
-        ap, precision, recall = evaluate_map(
+        ap, precision, recall, _ = evaluate_map(
             self.model,
             self.val_loader,
             self.device,

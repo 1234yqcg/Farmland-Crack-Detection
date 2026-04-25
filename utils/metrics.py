@@ -47,6 +47,7 @@ def calculate_map(predictions: List[Dict],
     
     for iou_thresh in iou_thresholds:
         aps = []
+        class_ap_map = {}
         
         for class_id in range(num_classes):
             class_preds = []
@@ -98,8 +99,10 @@ def calculate_map(predictions: List[Dict],
             
             ap = calculate_ap(recalls, precisions)
             aps.append(ap)
+            class_ap_map[class_id] = ap
         
         results[f'mAP@{iou_thresh}'] = np.mean(aps) if aps else 0.0
+        results[f'AP_per_class@{iou_thresh}'] = class_ap_map
     
     return results
 
