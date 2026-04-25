@@ -217,31 +217,27 @@ class RoboflowFarmlandDataset(Dataset):
                 A.HorizontalFlip(p=0.5),
                 A.RandomRotate90(p=0.3),
                 A.ShiftScaleRotate(
-                    shift_limit=0.1,
-                    scale_limit=0.2,
-                    rotate_limit=15,
+                    shift_limit=0.08,
+                    scale_limit=0.12,
+                    rotate_limit=10,
                     border_mode=cv2.BORDER_REFLECT,
-                    p=0.5
+                    p=0.4
                 ),
                 
                 # 颜色变换（适合农田图像）
                 A.RandomBrightnessContrast(
-                    brightness_limit=0.3,
-                    contrast_limit=0.3,
-                    p=0.5
+                    brightness_limit=0.2,
+                    contrast_limit=0.2,
+                    p=0.4
                 ),
                 A.HueSaturationValue(
-                    hue_shift_limit=20,
-                    sat_shift_limit=30,
-                    val_shift_limit=20,
-                    p=0.3
+                    hue_shift_limit=8,
+                    sat_shift_limit=15,
+                    val_shift_limit=10,
+                    p=0.15
                 ),
                 A.CLAHE(clip_limit=2.0, p=0.3),
-                
-                # 噪声和模糊
-                A.GaussNoise(var_limit=(10.0, 50.0), p=0.2),
-                A.GaussianBlur(blur_limit=(3, 7), p=0.2),
-                
+
                 # 标准化
                 A.Normalize(
                     mean=[0.485, 0.456, 0.406],
@@ -252,7 +248,7 @@ class RoboflowFarmlandDataset(Dataset):
             ], bbox_params=A.BboxParams(
                 format='pascal_voc',
                 label_fields=['class_labels'],
-                min_area=16,
+                min_area=4,
                 min_visibility=0.1
             ))
         else:
@@ -453,6 +449,44 @@ class RoboflowFarmlandDataset(Dataset):
         weights = weights / weights.sum() * self.num_classes
         
         return weights
+
+    def get_image_sampling_weights(self,
+                                   class_weights: Optional[torch.Tensor] = None,
+                                   background_weight: float = 0.2,
+                                   power: float = 1.0) -> torch.Tensor:
+        """为 WeightedRandomSampler 计算每张图像的采样权重"""
+        if class_weights is None:
+            class_weights = self.get_class_weights()
+        class_weights = class_weights.float().cpu()
+
+        image_weights = []
+        for label_file in self.label_files:
+            if label_file is None or not label_file.exists():
+                image_weights.append(float(background_weight))
+                continue
+
+            present_classes = []
+            try:
+                with open(label_file, 'r') as f:
+                    for line in f:
+                        parts = line.strip().split()
+                        if len(parts) < 5:
+                            continue
+                        class_id = int(parts[0])
+                        if 0 <= class_id < self.num_classes:
+                            present_classes.append(class_id)
+            except Exception:
+                present_classes = []
+
+            if not present_classes:
+                image_weights.append(float(background_weight))
+                continue
+
+            present_classes = list(set(present_classes))
+            weight = class_weights[present_classes].mean().item()
+            image_weights.append(float(max(weight, background_weight)) ** power)
+
+        return torch.tensor(image_weights, dtype=torch.double)
     
     def visualize_sample(self, idx: int, save_path: Optional[str] = None):
         """可视化单个样本"""

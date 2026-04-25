@@ -34,7 +34,7 @@ training:
     dfl_loss_weight: 1.5
     focal_gamma: 1.5
     focal_alpha: 0.25
-    label_smoothing: 0.02
+    label_smoothing: 0.0
   
   amp:
     enabled: true
@@ -46,6 +46,11 @@ training:
   gradient_accumulation:
     enabled: true
     steps: 4
+
+  sampling:
+    enabled: true
+    background_weight: 0.2
+    power: 1.0
 
   evaluation:
     period: 10
