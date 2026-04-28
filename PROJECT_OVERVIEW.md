@@ -13,7 +13,11 @@ Farmland_Crack_Detection/
 │   ├── train.yaml              # 训练配置
 │   └── train_personal.yaml     # 个性化训练配置（已优化4GB显存）
 ├── data/                       # 数据目录
-│   └── dataset.yaml            # 数据集配置
+│   ├── dataset.yaml            # 数据集配置
+│   ├── train/                  # 训练数据（140张图片 + 自动伪标签）
+│   │   ├── images/             # image_0000.jpg ~ image_0139.jpg
+│   │   └── labels/             # YOLO格式标注文件（109个框）
+│   └── OldData/                # 原始干涸土地数据(已迁移，不再使用)
 ├── models/                     # 模型架构
 │   ├── backbone/               # 骨干网络
 │   ├── head/                   # 检测头
@@ -39,10 +43,7 @@ Farmland_Crack_Detection/
 │   └── test_model.py           # 模型测试
 └── tools/                      # 辅助工具脚本
     ├── analyze_dataset.py      # 数据集分析
-    ├── batch_test.py           # 批量测试
     ├── clean_dataset.py        # 数据集清洗
-    ├── debug_anchor.py         # 锚框调试
-    ├── rebuild_dataset.py      # 数据集重建
     ├── split_dataset.py        # 数据集划分
     ├── check_*.py              # 各种检查脚本
     └── test_*.py               # 各种测试脚本
@@ -165,6 +166,26 @@ Farmland_Crack_Detection/
 - **文档齐全**：每个模块都有详细说明
 - **扩展性强**：易于添加新功能和改进
 - **毕业设计完美**：符合学术项目要求
+
+## 📊 数据集状态（2026-04-27 更新）
+
+| 项目 | 数值 |
+|------|------|
+| 图片总数 | **140 张**（Pexels API 下载） |
+| 标注方式 | 模型自动伪标签生成 + 交互式修正 |
+| 总标注框 | **109 个**（🔴细微裂纹63 / 🟡网状裂隙44 / 🔵深大裂缝2） |
+
+**数据集划分**：
+
+| 数据集 | 图片数 | 占比 |
+|--------|--------|------|
+| train  | 98 张  | 70%  |
+| val    | 21 张  | 15%  |
+| test   | 21 张  | 15%  |
+
+**颜色方案**：🔴细微裂纹(红 #FF4444) / 🟡网状裂隙(黄 #FFD700) / 🔵深大裂缝(蓝 #4488FF)
+
+---
 
 **您的农田干裂检测系统已经准备就绪！** 🎯
 

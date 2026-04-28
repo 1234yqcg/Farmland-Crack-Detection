@@ -1,7 +1,10 @@
-path: D:\桌面\学习\000毕业设计！\YOLOv10\farmland_crack_detection\data
+path: D:\桌面\学习\000毕业设计！\YOLOv10\Farmland_Crack_Detection\data
 train: train/images
-val: valid
+val: val/images
 test: test/images
 
-nc: 1
-names: ['Crack']
+nc: 3
+names:
+  0: 细微裂纹
+  1: 网状裂隙
+  2: 深大裂缝
