@@ -10,14 +10,16 @@ Farmland_Crack_Detection/
 │   ├── model/
 │   │   └── yolov10_crack.yaml # YOLOv10模型配置
 │   ├── inference.yaml          # 推理配置
-│   ├── train.yaml              # 训练配置
-│   └── train_personal.yaml     # 个性化训练配置（已优化4GB显存）
+│   ├── train.yaml              # 基础训练配置
+│   ├── train_personal.yaml     # 个性化训练配置（历史）
+│   ├── train_road_crack.yaml   # 道路裂缝预训练配置
+│   └── train_farmland_finetune.yaml # 农田微调配置
 ├── data/                       # 数据目录
-│   ├── dataset.yaml            # 数据集配置
-│   ├── train/                  # 训练数据（140张图片 + 自动伪标签）
-│   │   ├── images/             # image_0000.jpg ~ image_0139.jpg
-│   │   └── labels/             # YOLO格式标注文件（109个框）
-│   └── OldData/                # 原始干涸土地数据(已迁移，不再使用)
+│   ├── dataset.yaml            # 农田数据集配置
+│   ├── train/                  # 训练集（94张）
+│   ├── val/                    # 验证集（21张）
+│   ├── test/                   # 测试集（18张）
+│   └── labels/                 # 辅助标注工具历史输出目录
 ├── models/                     # 模型架构
 │   ├── backbone/               # 骨干网络
 │   ├── head/                   # 检测头
@@ -77,9 +79,10 @@ Farmland_Crack_Detection/
 │   ├── model/
 │   │   └── yolov10_crack.yaml # YOLOv10模型配置
 │   ├── inference.yaml          # 推理配置
-│   ├── train.yaml              # 训练配置
-│   ├── train_personal.yaml     # 个性化训练配置（已优化4GB显存）
-│   └── train_road_crack.yaml   # 道路裂缝预训练配置
+│   ├── train.yaml              # 基础训练配置
+│   ├── train_personal.yaml     # 个性化训练配置（历史）
+│   ├── train_road_crack.yaml   # 道路裂缝预训练配置
+│   └── train_farmland_finetune.yaml # 农田微调配置
 ```
 
 ### 公开模型相关文件
@@ -145,19 +148,12 @@ Farmland_Crack_Detection/
 
 ## 🚀 下一步操作
 
-### 如果您已下载好数据集：
+### 当前推荐流程（2026-04-29）
 
-1. **放置数据集**到 `data/roboflow/` 目录
-2. **验证数据集**运行数据验证脚本
-3. **下载YOLOv10权重**到 `weights/` 目录
-4. **开始训练**使用个性化配置
-
-### 如果使用公开模型：
-
-1. **测试API**使用 `final_api_test.py`
-2. **体验推理**使用公开模型
-3. **集成到GUI**添加到图形界面
-4. **对比性能**与自定义模型对比
+1. **开始农田微调训练**：使用 `configs/train_farmland_finetune.yaml`
+2. **在 val 集评估**：观察 mAP@0.5、Precision、Recall、各类别 AP
+3. **记录迁移学习实验结果**：与“仅 backbone 初始化”的基线对比
+4. **根据结果再决定**：是否提升输入尺寸到 800 或继续调类别采样
 
 ## 💡 项目优势
 
@@ -171,7 +167,7 @@ Farmland_Crack_Detection/
 
 | 项目 | 数值 |
 |------|------|
-| 图片总数 | **136 张**（Pexels API 下载，已删除4张不合适图片） |
+| 图片总数 | **133 张**（已完成清理与正式划分） |
 | 标注方式 | 模型自动伪标签 + 人工审查修正（assisted_annotation.py） |
 | 总标注框 | **322 个**（🔴细微裂纹145 / 🟡网状裂隙82 / 🔵深大裂缝95） |
 
@@ -179,14 +175,12 @@ Farmland_Crack_Detection/
 
 | 数据集 | 图片数 | 状态 |
 |--------|--------|------|
-| train  | 94 张  | ✅ 已标注完成，已重新编号 (image_0000 ~ image_0093) |
-| val    | 21 张  | ⏳ 待标注 |
-| test   | 21 张  | ⏳ 待标注 |
+| train  | 94 张  | ✅ 已标注完成 |
+| val    | 21 张  | ✅ 已标注完成 |
+| test   | 18 张  | ✅ 已标注完成 |
 
 **颜色方案**：🔴细微裂纹(红 #FF4444) / 🟡网状裂隙(黄 #FFD700) / 🔵深大裂缝(蓝 #4488FF)
 
 ---
 
-**您的农田干裂检测系统已经准备就绪！** 🎯
-
-需要我帮您进行下一步操作吗？比如开始训练或测试推理功能？
+**当前项目状态：道路预训练已完成，农田数据已全部标注完成，已具备直接进入微调训练的条件。**
