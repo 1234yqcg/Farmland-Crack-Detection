@@ -1,3 +1,4 @@
+# 训练单张图片
 import os
 import sys
 import torch
