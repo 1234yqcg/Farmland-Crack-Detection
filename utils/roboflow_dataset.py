@@ -213,27 +213,26 @@ class RoboflowFarmlandDataset(Dataset):
             return A.Compose([
                 A.Resize(self.image_size[0], self.image_size[1]),
                 A.HorizontalFlip(p=0.5),
-                A.VerticalFlip(p=0.3),
                 A.ShiftScaleRotate(
-                    shift_limit=0.05,
-                    scale_limit=0.10,
-                    rotate_limit=15,
+                    shift_limit=0.04,
+                    scale_limit=0.08,
+                    rotate_limit=8,
                     border_mode=cv2.BORDER_REFLECT,
-                    p=0.40
-                ),
-                A.RandomBrightnessContrast(
-                    brightness_limit=0.15,
-                    contrast_limit=0.15,
                     p=0.30
                 ),
-                A.HueSaturationValue(
-                    hue_shift_limit=10,
-                    sat_shift_limit=15,
-                    val_shift_limit=15,
+                A.RandomBrightnessContrast(
+                    brightness_limit=0.10,
+                    contrast_limit=0.10,
                     p=0.20
                 ),
-                A.GaussNoise(var_limit=(5, 25), p=0.15),
-                A.CLAHE(clip_limit=2.5, p=0.15),
+                A.HueSaturationValue(
+                    hue_shift_limit=8,
+                    sat_shift_limit=12,
+                    val_shift_limit=12,
+                    p=0.15
+                ),
+                A.GaussNoise(var_limit=(5, 20), p=0.10),
+                A.CLAHE(clip_limit=2.2, p=0.12),
                 A.Normalize(
                     mean=[0.485, 0.456, 0.406],
                     std=[0.229, 0.224, 0.225]
