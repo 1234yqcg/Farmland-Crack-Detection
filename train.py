@@ -3,6 +3,7 @@ import sys
 import warnings
 warnings.filterwarnings('ignore')
 os.environ['ALBUMENTATIONS_DISABLE_VERSION_CHECK'] = '1'
+import copy
 
 import yaml
 import torch
@@ -36,6 +37,25 @@ def collate_fn(batch):
         targets.append(item['labels'])
     images = torch.stack(images, dim=0)
     return {'images': images, 'targets': targets}
+
+
+class ModelEMA:
+    def __init__(self, model, decay=0.9998):
+        self.decay = decay
+        self.ema = copy.deepcopy(model).eval()
+        for param in self.ema.parameters():
+            param.requires_grad_(False)
+
+    @torch.no_grad()
+    def update(self, model):
+        model_state = model.state_dict()
+        ema_state = self.ema.state_dict()
+        for key, value in ema_state.items():
+            source = model_state[key].detach()
+            if not torch.is_floating_point(value):
+                value.copy_(source)
+            else:
+                value.mul_(self.decay).add_(source, alpha=1.0 - self.decay)
 
 class Trainer:
     def __init__(self, config_path):
@@ -85,7 +105,12 @@ class Trainer:
         if pretrained and os.path.exists(pretrained):
             try:
                 ckpt = self._safe_load_checkpoint(pretrained)
-                state_dict = ckpt.get('model', ckpt)
+                if isinstance(ckpt, dict) and 'ema_model' in ckpt:
+                    state_dict = ckpt['ema_model']
+                    self.logger.info("Loaded EMA model from pretrained checkpoint")
+                    print("Loaded EMA model from pretrained checkpoint")
+                else:
+                    state_dict = ckpt.get('model', ckpt) if isinstance(ckpt, dict) else ckpt
                 if hasattr(state_dict, 'state_dict'):
                     state_dict = state_dict.state_dict()
                 model_dict = self.model.state_dict()
@@ -114,7 +139,9 @@ class Trainer:
         batch_size = self.config['training']['batch_size']
         num_workers = self.config['training'].get('num_workers', 4)
         
-        train_dataset = RoboflowFarmlandDataset(dataset_yaml, 'train', img_size, augment=True)
+        mosaic_prob = self.config['training'].get('mosaic_prob', 0.5)
+        
+        train_dataset = RoboflowFarmlandDataset(dataset_yaml, 'train', img_size, augment=True, mosaic_prob=mosaic_prob)
         self.class_names = train_dataset.class_names
         self.class_weights = train_dataset.get_class_weights().to(self.device)
         sampling_cfg = self.config['training'].get('sampling', {})
@@ -125,7 +152,10 @@ class Trainer:
             sampler_weights = train_dataset.get_image_sampling_weights(
                 class_weights=self.class_weights.detach().cpu(),
                 background_weight=sampling_cfg.get('background_weight', 0.2),
-                power=sampling_cfg.get('power', 1.0)
+                power=sampling_cfg.get('power', 1.0),
+                class_boosts=sampling_cfg.get('class_boosts'),
+                use_box_frequency=sampling_cfg.get('use_box_frequency', True),
+                min_weight=sampling_cfg.get('min_weight', 0.2)
             )
             train_sampler = WeightedRandomSampler(
                 weights=sampler_weights,
@@ -178,14 +208,20 @@ class Trainer:
         self.grad_clip_norm = training_cfg.get('grad_clip_norm')
         eval_cfg = training_cfg.get('evaluation', {})
         self.eval_conf = eval_cfg.get('conf_threshold', 0.25)
+        self.eval_map_conf = eval_cfg.get('map_conf_threshold', min(self.eval_conf, 0.05))
         self.eval_iou = eval_cfg.get('iou_threshold', 0.5)
         self.eval_period = eval_cfg.get('period', 5)
         self.best_loss = float('inf')
         self.best_map = float('-inf')
+        self.best_map_loss = float('inf')
+        ema_cfg = training_cfg.get('ema', {})
+        self.use_ema = ema_cfg.get('enabled', False)
+        self.ema = ModelEMA(self.model, decay=ema_cfg.get('decay', 0.9998)) if self.use_ema else None
         # 训练概要信息
         self.logger.info(f"Device: {'cuda' if torch.cuda.is_available() else 'cpu'}")
         self.logger.info(f"Epochs: {self.config['training']['epochs']}")
         self.logger.info(f"Batch size: {self.config['training']['batch_size']}")
+        self.logger.info(f"EMA: {'enabled' if self.use_ema else 'disabled'}")
         try:
             self.logger.info(f"训练集样本数: {len(self.train_loader.dataset)}")
             self.logger.info(f"验证集样本数: {len(self.val_loader.dataset)}")
@@ -247,13 +283,19 @@ class Trainer:
         return (1.0 - ciou.clamp(min=-1.0, max=1.0)).sum()
 
     def _get_checkpoint(self, epoch):
-        return {
+        checkpoint = {
             'model': self.model.state_dict(),
             'epoch': epoch,
             'config_path': self.config_path,
             'num_classes': self.config['model']['num_classes'],
             'class_names': self.class_names
         }
+        if self.ema is not None:
+            checkpoint['ema_model'] = self.ema.ema.state_dict()
+        return checkpoint
+
+    def _get_eval_model(self):
+        return self.ema.ema if self.ema is not None else self.model
 
     def _apply_warmup(self, epoch, step_idx, num_steps):
         if self.warmup_epochs <= 0 or epoch > self.warmup_epochs:
@@ -415,7 +457,8 @@ class Trainer:
 
     @torch.no_grad()
     def validate(self, epoch: int = 0) -> float:
-        self.model.eval()
+        eval_model = self._get_eval_model()
+        eval_model.eval()
         total_loss = 0.0
         num_batches = 0
         pbar = tqdm(self.val_loader, desc=f'Val Epoch {epoch}', dynamic_ncols=True, leave=True, bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
@@ -423,7 +466,7 @@ class Trainer:
             images = batch['images'].to(self.device)
             targets = [t.to(self.device) for t in batch['targets']]
             with autocast(enabled=self.use_amp):
-                outputs = self.model(images, return_raw=True)
+                outputs = eval_model(images, return_raw=True)
                 loss = self._compute_loss(outputs, targets)
             total_loss += loss.item()
             num_batches += 1
@@ -433,18 +476,20 @@ class Trainer:
 
     @torch.no_grad()
     def validate_metrics(self, epoch: int = 0):
-        self.model.eval()
+        eval_model = self._get_eval_model()
+        eval_model.eval()
         ap, precision, recall, _ = evaluate_map(
-            self.model,
+            eval_model,
             self.val_loader,
             self.device,
             conf_threshold=self.eval_conf,
+            map_conf_threshold=self.eval_map_conf,
             iou_threshold=self.eval_iou,
             num_classes=self.config['model']['num_classes']
         )
         self.logger.info(
             f"Epoch {epoch}: mAP@0.5={ap:.4f}, Precision={precision:.4f}, Recall={recall:.4f}, "
-            f"conf={self.eval_conf}, iou={self.eval_iou}"
+            f"conf={self.eval_conf}, map_conf={self.eval_map_conf}, iou={self.eval_iou}"
         )
         return ap, precision, recall
 
@@ -475,6 +520,8 @@ class Trainer:
                         torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
+                    if self.ema is not None:
+                        self.ema.update(self.model)
                     self.optimizer.zero_grad(set_to_none=True)
                 
                 total_loss += loss.item() * self.accumulation_steps
@@ -497,8 +544,9 @@ class Trainer:
                 self.writer.add_scalar('metrics/mAP50', ap, epoch)
                 self.writer.add_scalar('metrics/precision', precision, epoch)
                 self.writer.add_scalar('metrics/recall', recall, epoch)
-                if ap > self.best_map or (ap == self.best_map and val_loss < self.best_loss):
+                if ap > self.best_map or (ap == self.best_map and val_loss < self.best_map_loss):
                     self.best_map = ap
+                    self.best_map_loss = val_loss
                     torch.save(self._get_checkpoint(epoch),
                                os.path.join(self.output_dir, 'weights', 'best.pt'))
                     self.logger.info(f"New best model saved with mAP@0.5: {ap:.4f}")

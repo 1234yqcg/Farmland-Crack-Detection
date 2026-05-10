@@ -7,13 +7,13 @@ model:
   model_scale: s
 
 training:
-  epochs: 50
-  batch_size: 4
-  image_size: [640, 640]
-  lr: 0.0001
+  epochs: 60
+  batch_size: 2
+  image_size: [800, 800]
+  lr: 0.00008
   min_lr: 0.00001
   weight_decay: 0.001
-  num_workers: 4
+  num_workers: 0
   grad_clip_norm: 10.0
 
   optimizer:
@@ -22,7 +22,7 @@ training:
 
   scheduler:
     type: CosineAnnealingLR
-    warmup_epochs: 5
+    warmup_epochs: 8
     warmup_lr: 0.00002
 
   loss:
@@ -42,19 +42,23 @@ training:
 
   gradient_accumulation:
     enabled: true
-    steps: 2
+    steps: 4
 
   sampling:
     enabled: true
     background_weight: 0.2
-    power: 1.0
+    power: 1.15
+    class_boosts: [1.0, 2.4, 1.8]
+    use_box_frequency: true
+    min_weight: 0.35
 
   evaluation:
     period: 5
     conf_threshold: 0.25
+    map_conf_threshold: 0.05
     iou_threshold: 0.5
 
 output:
-  dir: ./outputs/farmland_finetune_v1
+  dir: ./outputs/farmland_finetune_v3
   save_period: 5
   log_interval: 20

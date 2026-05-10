@@ -1,5 +1,4 @@
 # Roboflow数据集适配器
-
 import os
 import cv2
 import torch
@@ -30,7 +29,8 @@ class RoboflowFarmlandDataset(Dataset):
                  image_size: Tuple[int, int] = (512, 512),
                  transform: Optional[A.Compose] = None,
                  augment: bool = True,
-                 cache_images: bool = False):
+                 cache_images: bool = False,
+                 mosaic_prob: float = 0.5):
         """
         初始化数据集
         
@@ -41,12 +41,14 @@ class RoboflowFarmlandDataset(Dataset):
             transform: 自定义数据增强
             augment: 是否启用数据增强
             cache_images: 是否缓存图像到内存（小数据集可用）
+            mosaic_prob: Mosaic增强概率 (0=禁用, 0.5=50%概率)
         """
         self.data_yaml_path = Path(data_yaml_path)
         self.split = split
         self.image_size = image_size
         self.augment = augment
         self.cache_images = cache_images
+        self.mosaic_prob = mosaic_prob if (split == "train" and augment) else 0.0
         
         # 解析配置文件
         self.config = self._load_yaml_config()
@@ -208,51 +210,41 @@ class RoboflowFarmlandDataset(Dataset):
     def _get_default_transforms(self) -> A.Compose:
         """获取默认的数据增强配置"""
         if self.split == "train" and self.augment:
-            # 训练集数据增强
             return A.Compose([
-                # 基础变换
                 A.Resize(self.image_size[0], self.image_size[1]),
-                
-                # 几何变换
                 A.HorizontalFlip(p=0.5),
-                A.RandomRotate90(p=0.3),
                 A.ShiftScaleRotate(
-                    shift_limit=0.08,
-                    scale_limit=0.12,
-                    rotate_limit=10,
+                    shift_limit=0.04,
+                    scale_limit=0.08,
+                    rotate_limit=8,
                     border_mode=cv2.BORDER_REFLECT,
-                    p=0.4
+                    p=0.30
                 ),
-                
-                # 颜色变换（适合农田图像）
                 A.RandomBrightnessContrast(
-                    brightness_limit=0.2,
-                    contrast_limit=0.2,
-                    p=0.4
+                    brightness_limit=0.10,
+                    contrast_limit=0.10,
+                    p=0.20
                 ),
                 A.HueSaturationValue(
                     hue_shift_limit=8,
-                    sat_shift_limit=15,
-                    val_shift_limit=10,
+                    sat_shift_limit=12,
+                    val_shift_limit=12,
                     p=0.15
                 ),
-                A.CLAHE(clip_limit=2.0, p=0.3),
-
-                # 标准化
+                A.GaussNoise(var_limit=(5, 20), p=0.10),
+                A.CLAHE(clip_limit=2.2, p=0.12),
                 A.Normalize(
                     mean=[0.485, 0.456, 0.406],
                     std=[0.229, 0.224, 0.225]
                 ),
-                
                 ToTensorV2()
             ], bbox_params=A.BboxParams(
                 format='pascal_voc',
                 label_fields=['class_labels'],
                 min_area=4,
-                min_visibility=0.1
+                min_visibility=0.15
             ))
         else:
-            # 验证/测试集变换
             return A.Compose([
                 A.Resize(self.image_size[0], self.image_size[1]),
                 A.Normalize(
@@ -264,6 +256,67 @@ class RoboflowFarmlandDataset(Dataset):
                 format='pascal_voc',
                 label_fields=['class_labels']
             ))
+
+    def _apply_mosaic(self, idx: int) -> Tuple[np.ndarray, List[List[float]], List[int]]:
+        """Mosaic增强：将4张图片拼接成一张"""
+        img_h, img_w = self.image_size
+        
+        indices = [idx]
+        for _ in range(3):
+            rand_idx = np.random.randint(0, len(self))
+            while rand_idx in indices:
+                rand_idx = np.random.randint(0, len(self))
+            indices.append(rand_idx)
+        
+        np.random.shuffle(indices)
+        
+        mosaic_img = np.zeros((img_h, img_w, 3), dtype=np.uint8)
+        all_bboxes = []
+        all_classes = []
+        
+        cx = [0, img_w // 2, img_w // 2, 0]
+        cy = [0, 0, img_h // 2, img_h // 2]
+        
+        for i, src_idx in enumerate(indices):
+            try:
+                src_path = self.image_files[src_idx]
+                if str(src_path) in self.image_cache:
+                    src_img = self.image_cache[str(src_path)]
+                else:
+                    src_img = self._load_image(src_path)
+                
+                src_h, src_w = src_img.shape[:2]
+                src_lbl = self.label_files[src_idx]
+                src_labels = self._load_labels(src_lbl, src_w, src_h)
+                
+                x1, y1 = cx[i], cy[i]
+                x2 = x1 + (img_w // 2) if i % 2 == 0 else img_w
+                y2 = y1 + (img_h // 2) if i >= 2 else img_h
+                
+                resized = cv2.resize(src_img, (x2 - x1, y2 - y1))
+                mosaic_img[y1:y2, x1:x2] = resized
+                
+                scale_x = (x2 - x1) / src_w
+                scale_y = (y2 - y1) / src_h
+                
+                for lbl in src_labels:
+                    xc = lbl[0] * src_w * scale_x + x1
+                    yc = lbl[1] * src_h * scale_y + y1
+                    bw = lbl[2] * src_w * scale_x
+                    bh = lbl[3] * src_h * scale_y
+                    
+                    bx1 = max(0, xc - bw / 2)
+                    by1 = max(0, yc - bh / 2)
+                    bx2 = min(img_w, xc + bw / 2)
+                    by2 = min(img_h, yc + bh / 2)
+                    
+                    if (bx2 - bx1) >= 4 and (by2 - by1) >= 4:
+                        all_bboxes.append([bx1, by1, bx2, by2])
+                        all_classes.append(int(lbl[4]))
+            except Exception:
+                continue
+        
+        return mosaic_img, all_bboxes, all_classes
     
     def __len__(self) -> int:
         return len(self.image_files)
@@ -271,32 +324,39 @@ class RoboflowFarmlandDataset(Dataset):
     def __getitem__(self, idx: int) -> Dict:
         """获取单个数据项"""
         
-        # 获取文件路径
         image_path = self.image_files[idx]
         label_path = self.label_files[idx]
         
-        # 加载图像
-        if self.cache_images and str(image_path) in self.image_cache:
-            image = self.image_cache[str(image_path)]
+        if self.mosaic_prob > 0 and np.random.random() < self.mosaic_prob:
+            try:
+                image, bboxes, class_labels = self._apply_mosaic(idx)
+                original_height, original_width = self.image_size
+            except Exception as e:
+                print(f"[WARN] Mosaic失败，回退到普通增强: {e}")
+                image = self._load_image(image_path)
+                original_height, original_width = image.shape[:2]
+                labels = self._load_labels(label_path, original_width, original_height)
+                bboxes = [label[:4] for label in labels]
+                class_labels = [int(label[4]) for label in labels]
         else:
-            image = self._load_image(image_path)
-            if self.cache_images:
-                self.image_cache[str(image_path)] = image
+            if self.cache_images and str(image_path) in self.image_cache:
+                image = self.image_cache[str(image_path)]
+            else:
+                image = self._load_image(image_path)
+                if self.cache_images:
+                    self.image_cache[str(image_path)] = image
+            
+            original_height, original_width = image.shape[:2]
+            
+            labels = self._load_labels(label_path, original_width, original_height)
+            
+            if len(labels) > 0:
+                bboxes = [label[:4] for label in labels]
+                class_labels = [int(label[4]) for label in labels]
+            else:
+                bboxes = []
+                class_labels = []
         
-        original_height, original_width = image.shape[:2]
-        
-        # 加载标签
-        labels = self._load_labels(label_path, original_width, original_height)
-        
-        # 应用数据增强
-        if len(labels) > 0:
-            bboxes = [label[:4] for label in labels]
-            class_labels = [int(label[4]) for label in labels]
-        else:
-            bboxes = []
-            class_labels = []
-        
-        # 应用变换
         if self.transform:
             try:
                 transformed = self.transform(
@@ -307,17 +367,14 @@ class RoboflowFarmlandDataset(Dataset):
                 image = transformed['image']
                 bboxes = transformed['bboxes']
                 class_labels = transformed['class_labels']
-                # 确保转换为tensor
                 if not isinstance(image, torch.Tensor):
                     image = torch.from_numpy(image).permute(2, 0, 1).float() / 255.0
             except Exception as e:
                 print(f"[WARN] 数据增强失败 {image_path}: {e}")
                 image = torch.from_numpy(image).permute(2, 0, 1).float() / 255.0
         else:
-            # 基本处理
             image = torch.from_numpy(image).permute(2, 0, 1).float() / 255.0
         
-        # 准备标签张量
         if len(bboxes) > 0:
             labels_tensor = torch.zeros((len(bboxes), 6))  # [batch_idx, class, x, y, w, h]
             for i, (bbox, class_label) in enumerate(zip(bboxes, class_labels)):
@@ -453,11 +510,21 @@ class RoboflowFarmlandDataset(Dataset):
     def get_image_sampling_weights(self,
                                    class_weights: Optional[torch.Tensor] = None,
                                    background_weight: float = 0.2,
-                                   power: float = 1.0) -> torch.Tensor:
+                                   power: float = 1.0,
+                                   class_boosts: Optional[List[float]] = None,
+                                   use_box_frequency: bool = True,
+                                   min_weight: float = 0.2) -> torch.Tensor:
         """为 WeightedRandomSampler 计算每张图像的采样权重"""
         if class_weights is None:
             class_weights = self.get_class_weights()
         class_weights = class_weights.float().cpu()
+        if class_boosts is None:
+            class_boosts = [1.0] * self.num_classes
+        if len(class_boosts) != self.num_classes:
+            raise ValueError(
+                f"class_boosts 长度应为 {self.num_classes}，当前为 {len(class_boosts)}"
+            )
+        class_boosts = torch.tensor(class_boosts, dtype=torch.float32)
 
         image_weights = []
         for label_file in self.label_files:
@@ -465,7 +532,7 @@ class RoboflowFarmlandDataset(Dataset):
                 image_weights.append(float(background_weight))
                 continue
 
-            present_classes = []
+            class_counter = Counter()
             try:
                 with open(label_file, 'r') as f:
                     for line in f:
@@ -474,17 +541,26 @@ class RoboflowFarmlandDataset(Dataset):
                             continue
                         class_id = int(parts[0])
                         if 0 <= class_id < self.num_classes:
-                            present_classes.append(class_id)
+                            class_counter[class_id] += 1
             except Exception:
-                present_classes = []
+                class_counter = Counter()
 
-            if not present_classes:
+            if not class_counter:
                 image_weights.append(float(background_weight))
                 continue
 
-            present_classes = list(set(present_classes))
-            weight = class_weights[present_classes].mean().item()
-            image_weights.append(float(max(weight, background_weight)) ** power)
+            weight_terms = []
+            total_boxes = sum(class_counter.values())
+            for class_id, count in class_counter.items():
+                base_weight = class_weights[class_id].item() * class_boosts[class_id].item()
+                if use_box_frequency and total_boxes > 0:
+                    contribution = count / total_boxes
+                    weight_terms.append(base_weight * (1.0 + contribution))
+                else:
+                    weight_terms.append(base_weight)
+
+            weight = max(sum(weight_terms), min_weight, background_weight)
+            image_weights.append(float(weight) ** power)
 
         return torch.tensor(image_weights, dtype=torch.double)
     

@@ -1,0 +1,8 @@
+names:
+- 细微裂纹
+- 网状裂隙
+- 深大裂缝
+nc: 3
+test: d:\桌面\学习\000毕业设计！\YOLOv10\Farmland_Crack_Detection\data\test
+train: d:\桌面\学习\000毕业设计！\YOLOv10\Farmland_Crack_Detection\data\train_patches
+val: d:\桌面\学习\000毕业设计！\YOLOv10\Farmland_Crack_Detection\data\val
