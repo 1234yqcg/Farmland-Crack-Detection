@@ -1,3 +1,7 @@
+# 功能：将训练集大图滑窗裁剪为 640x640 重叠 Patch，扩增样本数量
+# 对于尺寸大于 640 的图像，以 320 步长滑窗裁剪，并自动转换 YOLO 标签坐标。
+# 仅保留与目标重叠面积 >30% 的 Patch，减少截断框噪声。
+# 输出到 data/train_patches/，并生成 dataset_patch.yaml 供训练使用。
 import os
 import cv2
 import numpy as np
@@ -20,11 +24,8 @@ def resize_image_and_labels(image, labels, target_height):
     new_w = int(w * scale)
     new_h = target_height
     resized = cv2.resize(image, (new_w, new_h))
-    new_labels = []
-    for label in labels:
-        cls_id, cx, cy, bw, bh = label
-        new_labels.append([cls_id, cx, cy, bw * (new_w / w), bh * (new_h / h)])
-    return resized, new_labels
+    # Labels are normalized in YOLO format, so they stay unchanged after uniform resize.
+    return resized, labels
 
 
 def extract_patches(image, labels, patch_size, stride):

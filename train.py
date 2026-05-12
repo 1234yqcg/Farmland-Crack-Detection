@@ -140,8 +140,9 @@ class Trainer:
         num_workers = self.config['training'].get('num_workers', 4)
         
         mosaic_prob = self.config['training'].get('mosaic_prob', 0.5)
+        mixup_prob = self.config['training'].get('mixup_prob', 0.0)
         
-        train_dataset = RoboflowFarmlandDataset(dataset_yaml, 'train', img_size, augment=True, mosaic_prob=mosaic_prob)
+        train_dataset = RoboflowFarmlandDataset(dataset_yaml, 'train', img_size, augment=True, mosaic_prob=mosaic_prob, mixup_prob=mixup_prob)
         self.class_names = train_dataset.class_names
         self.class_weights = train_dataset.get_class_weights().to(self.device)
         sampling_cfg = self.config['training'].get('sampling', {})
@@ -351,16 +352,17 @@ class Trainer:
             for batch_idx, t_list in enumerate(targets):
                 if len(t_list) == 0: continue
                 
-                gt_boxes = t_list[:, 2:6] # x1, y1, x2, y2
+                gt_boxes = t_list[:, 2:6] # x1, y1, x2, y2 (pixel coords)
                 gt_classes = t_list[:, 1].long()
                 
                 # Convert to grid coords
+                gt_centers = (gt_boxes[:, :2] + gt_boxes[:, 2:]) / 2.0
+                gt_centers_grid = gt_centers / stride
                 gt_boxes_grid = gt_boxes / stride
-                gt_centers = (gt_boxes_grid[:, :2] + gt_boxes_grid[:, 2:]) / 2
                 
                 # Find grid indices
-                gx = gt_centers[:, 0]
-                gy = gt_centers[:, 1]
+                gx = gt_centers_grid[:, 0]
+                gy = gt_centers_grid[:, 1]
                 gx_i = gx.long().clamp(0, w-1)
                 gy_i = gy.long().clamp(0, h-1)
                 
@@ -369,7 +371,7 @@ class Trainer:
                     base_y = gy_i[idx].item()
                     cls_id = gt_classes[idx].item()
                     gt_box = gt_boxes_grid[idx:idx + 1, :]
-                    gt_center = gt_centers[idx]
+                    gt_center = gt_centers_grid[idx]
                     gt_size = (gt_box[:, 2:] - gt_box[:, :2]).squeeze(0)
                     object_scale = torch.sqrt((gt_size[0] * gt_size[1]).clamp(min=1e-6))
                     dynamic_top_k = 1
@@ -385,11 +387,11 @@ class Trainer:
                         if 0 <= cx < w and 0 <= cy < h:
                             center_xy = torch.tensor([cx + 0.5, cy + 0.5], device=self.device)
                             center_offset = torch.abs(center_xy - gt_center)
-                            if center_offset.max() > 1.25:
+                            if center_offset.max() > 2.0:
                                 continue
                             center_xy = center_xy.unsqueeze(0)
                             ltrb = torch.cat([center_xy - gt_box[:, :2], gt_box[:, 2:] - center_xy], dim=1)
-                            if (ltrb <= 0).any() or ltrb.max() >= self.reg_max - 1.01:
+                            if (ltrb < 0).any() or ltrb.max() >= self.reg_max - 0.01:
                                 continue
                             distance = torch.norm(center_xy.squeeze(0) - gt_center, p=2).item()
                             candidates.append((distance, cx, cy, ltrb.squeeze(0)))
@@ -400,7 +402,7 @@ class Trainer:
                             target_mask[batch_idx, cy, cx] = True
                             target_cls[batch_idx, :, cy, cx] = 0.0
                             target_cls[batch_idx, cls_id, cy, cx] = 1.0
-                            target_box[batch_idx, cy, cx] = ltrb.clamp(min=0.01, max=self.reg_max - 1.01)
+                            target_box[batch_idx, cy, cx] = ltrb.clamp(min=0.0, max=self.reg_max - 0.01)
                 
             num_pos = int(target_mask.sum().item())
             total_samples += num_pos
@@ -426,7 +428,7 @@ class Trainer:
                 # reg_pred: [B, 4*reg_max, H, W] -> permute -> [B, H, W, 4, reg_max]
                 pred_dist = reg_pred.permute(0, 2, 3, 1).reshape(b, h, w, 4, self.reg_max)
                 pred_dist_pos = pred_dist[target_mask] # [N_pos, 4, reg_max]
-                target_box_pos = target_box[target_mask] # [N_pos, 4]
+                target_box_pos = target_box[target_mask].clamp(0, self.reg_max - 1.001) # [N_pos, 4]
                 
                 # DFL Loss
                 tl = target_box_pos.long() # left integer

@@ -8,15 +8,17 @@ __pycache__/
 dist/
 build/
 
-# PyTorch weights (下载链接在README中)
+# PyTorch weights
 weights/*.pt
 !weights/.gitkeep
 
-# Dataset images (数据集太大不上传)
+# Dataset images (not uploaded)
 data/train/images/
+data/val/images/
 data/test/images/
-data/valid/images/
-data/review_output/
+data/train_patches/
+data/train_copypaste/
+data/pseudo_china_drone/
 
 # Training outputs
 outputs/
@@ -38,6 +40,3 @@ Thumbs.db
 
 # Tensorboard
 events.out.tfevents.*
-
-#OldData
-data/OldData/

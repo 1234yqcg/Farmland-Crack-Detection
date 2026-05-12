@@ -30,7 +30,8 @@ class RoboflowFarmlandDataset(Dataset):
                  transform: Optional[A.Compose] = None,
                  augment: bool = True,
                  cache_images: bool = False,
-                 mosaic_prob: float = 0.5):
+                 mosaic_prob: float = 0.5,
+                 mixup_prob: float = 0.0):
         """
         初始化数据集
         
@@ -49,6 +50,7 @@ class RoboflowFarmlandDataset(Dataset):
         self.augment = augment
         self.cache_images = cache_images
         self.mosaic_prob = mosaic_prob if (split == "train" and augment) else 0.0
+        self.mixup_prob = mixup_prob if (split == "train" and augment) else 0.0
         
         # 解析配置文件
         self.config = self._load_yaml_config()
@@ -317,6 +319,52 @@ class RoboflowFarmlandDataset(Dataset):
                 continue
         
         return mosaic_img, all_bboxes, all_classes
+
+    def _apply_mixup(self, img1, bboxes1, classes1):
+        """MixUp增强：将两张图片加权融合"""
+        rand_idx = np.random.randint(0, len(self))
+        try:
+            img2_path = self.image_files[rand_idx]
+            if str(img2_path) in self.image_cache:
+                img2 = self.image_cache[str(img2_path)]
+            else:
+                img2 = self._load_image(img2_path)
+                
+            src_h, src_w = img2.shape[:2]
+            img_h, img_w = self.image_size
+            img2 = cv2.resize(img2, (img_w, img_h))
+            
+            lbl2_path = self.label_files[rand_idx]
+            labels2 = self._load_labels(lbl2_path, src_w, src_h)
+            
+            bboxes2 = []
+            classes2 = []
+            scale_x = img_w / src_w
+            scale_y = img_h / src_h
+            
+            for lbl in labels2:
+                xc = lbl[0] * src_w * scale_x
+                yc = lbl[1] * src_h * scale_y
+                bw = lbl[2] * src_w * scale_x
+                bh = lbl[3] * src_h * scale_y
+                
+                bx1 = max(0, xc - bw / 2)
+                by1 = max(0, yc - bh / 2)
+                bx2 = min(img_w, xc + bw / 2)
+                by2 = min(img_h, yc + bh / 2)
+                
+                if (bx2 - bx1) >= 4 and (by2 - by1) >= 4:
+                    bboxes2.append([bx1, by1, bx2, by2])
+                    classes2.append(int(lbl[4]))
+                    
+            r = np.random.beta(32.0, 32.0)  # MixUp ratio
+            mixup_img = (img1 * r + img2 * (1 - r)).astype(np.uint8)
+            all_bboxes = bboxes1 + bboxes2
+            all_classes = classes1 + classes2
+            
+            return mixup_img, all_bboxes, all_classes
+        except Exception:
+            return img1, bboxes1, classes1
     
     def __len__(self) -> int:
         return len(self.image_files)
@@ -356,6 +404,22 @@ class RoboflowFarmlandDataset(Dataset):
             else:
                 bboxes = []
                 class_labels = []
+
+        if self.mixup_prob > 0 and np.random.random() < self.mixup_prob:
+            try:
+                if image.shape[:2] != self.image_size:
+                    image = cv2.resize(image, (self.image_size[1], self.image_size[0]))
+                    # 缩放对应的bboxes
+                    scale_x = self.image_size[1] / original_width
+                    scale_y = self.image_size[0] / original_height
+                    for i in range(len(bboxes)):
+                        bboxes[i][0] *= scale_x
+                        bboxes[i][1] *= scale_y
+                        bboxes[i][2] *= scale_x
+                        bboxes[i][3] *= scale_y
+                image, bboxes, class_labels = self._apply_mixup(image, bboxes, class_labels)
+            except Exception as e:
+                print(f"[WARN] MixUp失败: {e}")
         
         if self.transform:
             try:
