@@ -1,5 +1,0 @@
-train: data\pseudo_china_drone
-val: ./data/val
-test: ./data/test
-nc: 3
-names: ['细微裂纹', '网状裂隙', '深大裂缝']

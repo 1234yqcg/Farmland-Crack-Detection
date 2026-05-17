@@ -1,5 +1,0 @@
-train: ./train_copypaste
-val: ./val
-test: ./test
-nc: 3
-names: ['细微裂纹', '网状裂隙', '深大裂缝']
