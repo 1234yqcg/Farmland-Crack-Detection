@@ -20,8 +20,14 @@ data/train_patches/
 data/train_copypaste/
 data/pseudo_china_drone/
 
+# Dataset zip files (too large for GitHub, use Baidu Netdisk)
+*.zip
+data.zip
+TheFirstDemo.zip
+
 # Training outputs
 outputs/
+runs/
 logs/
 *.log
 
